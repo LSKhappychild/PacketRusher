@@ -10,7 +10,6 @@ import (
 	gnbContext "my5G-RANTester/internal/control_test_engine/gnb/context"
 	"my5G-RANTester/internal/control_test_engine/ue/context"
 
-	gtpLink "github.com/free5gc/go-gtp5gnl/linkcmd"
 	gtpTunnel "github.com/free5gc/go-gtp5gnl/tuncmd"
 
 	log "github.com/sirupsen/logrus"
@@ -19,7 +18,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"time"
 )
 
 func SetupGtpInterface(ue *context.UEContext, msg gnbContext.UEMessage) {
@@ -49,32 +47,29 @@ func SetupGtpInterface(ue *context.UEContext, msg gnbContext.UEMessage) {
 	qfi := pduSession.GnbPduSession.GetQosId()
 	ueIp := pduSession.GetIp()
 	msin := ue.GetMsin()
-	nameInf := fmt.Sprintf("val%s", msin)
-	vrfInf := fmt.Sprintf("vrf%s", msin)
-	stopSignal := make(chan bool)
 
-	_ = gtpLink.CmdDel(nameInf)
-
-	if pduSession.GetStopSignal() != nil {
-		close(pduSession.GetStopSignal())
-		time.Sleep(time.Second)
+	// Use the shared gtp5g interface name from the gNB
+	nameInf := msg.GtpIfName
+	if nameInf == "" {
+		// Fallback for backward compatibility
+		nameInf = fmt.Sprintf("val%s", msin)
+		log.Warn("[UE][GTP] No shared GTP interface name received, falling back to ", nameInf)
 	}
 
-	go func() {
-		// This function should not return as long as the GTP-U UDP socket is open
-		if err := gtpLink.CmdAddWithStopCh(nameInf, 1, 131072, ueGnbIp.String(), "", stopSignal); err != nil {
-			log.Fatal("[GNB][GTP] Unable to create Kernel GTP interface: ", err, msin, nameInf)
-			return
-		}
-	}()
+	vrfInf := fmt.Sprintf("vrf%s", msin)
 
-	pduSession.SetStopSignal(stopSignal)
+	// Get the allocated PDR/FAR/QER IDs from the gNB
+	ulPdrId, dlPdrId, ulFarId, dlFarId, qerId := gnbPduSession.GetGtpRuleIds()
 
-	time.Sleep(time.Second)
+	ulPdrStr := strconv.FormatUint(uint64(ulPdrId), 10)
+	dlPdrStr := strconv.FormatUint(uint64(dlPdrId), 10)
+	ulFarStr := strconv.FormatUint(uint64(ulFarId), 10)
+	dlFarStr := strconv.FormatUint(uint64(dlFarId), 10)
+	qerStr := strconv.FormatUint(uint64(qerId), 10)
 
 	// Create FAR for uplink.
 	cmdAddFar := []string{nameInf,
-		"1",             // FAR ID = 1
+		ulFarStr,        // FAR ID (allocated by gNB)
 		"--action", "2", // Apply Action = FORW
 	}
 	log.Debug("[UE][GTP] Setting up GTP Forwarding Action Rule for ", strings.Join(cmdAddFar, " "))
@@ -85,7 +80,7 @@ func SetupGtpInterface(ue *context.UEContext, msg gnbContext.UEMessage) {
 
 	// Create FAR for downlink.
 	cmdAddFar = []string{nameInf,
-		"2",             // FAR ID = 2
+		dlFarStr,        // FAR ID (allocated by gNB)
 		"--action", "2", // Apply Action = FORW
 		"--hdr-creation", "0", strconv.FormatUint(uint64(gnbPduSession.GetTeidUplink()), 10), upfIp, "2152", // Outer Header Creation
 	}
@@ -97,32 +92,32 @@ func SetupGtpInterface(ue *context.UEContext, msg gnbContext.UEMessage) {
 
 	// Create PDR for uplink.
 	cmdAddPdr := []string{nameInf,
-		"1",          // PDR ID = 1
+		ulPdrStr,     // PDR ID (allocated by gNB)
 		"--pcd", "1", // Precedence = 1
 		"--hdr-rm", "0", // Outer Header Removal = GTP-U/UDP/IPv4
 		"--ue-ipv4", ueIp, // UE IP Address
 		"--f-teid", strconv.FormatUint(uint64(gnbPduSession.GetTeidDownlink()), 10), msg.GnbIp.String(), // F-TEID
-		"--far-id", "1", // FAR ID = 1
+		"--far-id", ulFarStr, // FAR ID (allocated by gNB)
 		"--src-intf", "1", // Source Interface = Core
 	}
 	log.Debug("[UE][GTP] Setting up GTP Packet Detection Rule for ", strings.Join(cmdAddPdr, " "))
 	if err := gtpTunnel.CmdAddPDR(cmdAddPdr); err != nil {
-		log.Fatal("[GNB][GTP] Unable to create FAR: ", err)
+		log.Fatal("[GNB][GTP] Unable to create PDR: ", err)
 		return
 	}
 
 	cmdAddPdr = []string{nameInf,
-		"2",          // PDR ID = 2
+		dlPdrStr,     // PDR ID (allocated by gNB)
 		"--pcd", "2", // Precedence = 2
 		"--ue-ipv4", ueIp, // UE IP Address
-		"--far-id", "2", // FAR ID = 2
+		"--far-id", dlFarStr, // FAR ID (allocated by gNB)
 		"--src-intf", "0", // Source Interface = Access
 		"--gtpu-src-ip", ueGnbIp.String(), // GTP-U source IP address (not part of PFCP spec)
 	}
-	if qfi > 0 {
+	if qfi > 0 && qerId != 0 {
 		// Create QER for downlink.
 		cmdAddQer := []string{nameInf,
-			"1",                                 // QER ID = 1
+			qerStr,                              // QER ID (allocated by gNB)
 			"--qfi", strconv.FormatInt(qfi, 10), // QFI
 		}
 		log.Debug("[UE][GTP] Setting Up QFI", strings.Join(cmdAddQer, " "))
@@ -131,14 +126,14 @@ func SetupGtpInterface(ue *context.UEContext, msg gnbContext.UEMessage) {
 			return
 		}
 		cmdAddPdr = append(cmdAddPdr,
-			"--qer-id", "1", // QER ID = 1
+			"--qer-id", qerStr, // QER ID (allocated by gNB)
 		)
 	}
 
 	// Create PDR for downlink.
 	log.Debug("[UE][GTP] Setting Up GTP Packet Detection Rule for ", strings.Join(cmdAddPdr, " "))
 	if err := gtpTunnel.CmdAddPDR(cmdAddPdr); err != nil {
-		log.Fatal("[UE][GTP] Unable to create FAR ", err)
+		log.Fatal("[UE][GTP] Unable to create PDR ", err)
 		return
 	}
 
@@ -153,6 +148,7 @@ func SetupGtpInterface(ue *context.UEContext, msg gnbContext.UEMessage) {
 			Mask: net.IPv4Mask(255, 255, 255, 255),
 		},
 	}
+	_ = netlink.AddrDel(link, addrTun) // remove if exists (idempotent for Service Request re-activation)
 	if err := netlink.AddrAdd(link, addrTun); err != nil {
 		log.Fatal("[UE][DATA] Error in adding IP for virtual interface", err)
 		return
@@ -202,7 +198,7 @@ func SetupGtpInterface(ue *context.UEContext, msg gnbContext.UEMessage) {
 	// Insert default route from the UE to the Data Network.
 	route := &netlink.Route{
 		Dst:       &net.IPNet{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)}, // default
-		LinkIndex: link.Attrs().Index,                                      // dev val<MSIN>
+		LinkIndex: link.Attrs().Index,                                      // dev gtp-<gnbId>
 		Scope:     netlink.SCOPE_LINK,                                      // scope link
 		Protocol:  4,                                                       // proto static
 		Priority:  1,                                                       // metric 1

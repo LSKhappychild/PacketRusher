@@ -237,9 +237,14 @@ func HandlerInitialContextSetupRequest(gnb *context.GNBContext, message *ngapTyp
 				}
 			}
 
-			_, err = ue.CreatePduSession(pduSessionId, upfIp, sst, sd, 0, 1, 0, 0, binary.BigEndian.Uint32(teidUplink), gnb.GetUeTeid(ue))
+			pduSession, err := ue.CreatePduSession(pduSessionId, upfIp, sst, sd, 0, 1, 0, 0, binary.BigEndian.Uint32(teidUplink), gnb.GetUeTeid(ue))
 			if err != nil {
 				log.Error("[GNB] ", err)
+			}
+
+			if pduSession != nil && gnb.IsGtpIfReady() {
+				ulPdr, dlPdr, ulFar, dlFar, qerId := gnb.AllocatePdrFarIds(false)
+				pduSession.SetGtpRuleIds(ulPdr, dlPdr, ulFar, dlFar, qerId)
 			}
 
 			if pDUSessionResourceSetupItemCtxReq.NASPDU != nil {
@@ -247,7 +252,7 @@ func HandlerInitialContextSetupRequest(gnb *context.GNBContext, message *ngapTyp
 			}
 		}
 
-		msg := context.UEMessage{GNBPduSessions: ue.GetPduSessions(), GnbIp: gnb.GetN3GnbIp()}
+		msg := context.UEMessage{GNBPduSessions: ue.GetPduSessions(), GnbIp: gnb.GetN3GnbIp(), GtpIfName: gnb.GetGtpIfName()}
 		sender.SendMessageToUe(ue, msg)
 	}
 
@@ -393,6 +398,10 @@ func HandlerPduSessionResourceSetupRequest(gnb *context.GNBContext, message *nga
 				continue
 			}
 		}
+		if gnb.IsGtpIfReady() {
+			ulPdr, dlPdr, ulFar, dlFar, qerIdAlloc := gnb.AllocatePdrFarIds(qosId > 0)
+			pduSession.SetGtpRuleIds(ulPdr, dlPdr, ulFar, dlFar, qerIdAlloc)
+		}
 		configuredPduSessions = append(configuredPduSessions, pduSession)
 
 		log.Info("[GNB][NGAP][UE] PDU Session was created with successful.")
@@ -414,7 +423,7 @@ func HandlerPduSessionResourceSetupRequest(gnb *context.GNBContext, message *nga
 
 		var pduSessions [16]*context.GnbPDUSession
 		pduSessions[0] = pduSession
-		msg := context.UEMessage{GnbIp: gnb.GetN3GnbIp(), GNBPduSessions: pduSessions}
+		msg := context.UEMessage{GnbIp: gnb.GetN3GnbIp(), GNBPduSessions: pduSessions, GtpIfName: gnb.GetGtpIfName()}
 
 		sender.SendMessageToUe(ue, msg)
 	}
@@ -483,6 +492,7 @@ func HandlerPduSessionReleaseCommand(gnb *context.GNBContext, message *ngapType.
 			log.Error("[GNB][NGAP] Unable to delete PDU Session ", pduSessionId.Value, " from UE as the PDU Session was not found. Ignoring.")
 			continue
 		}
+		gnb.RemoveGtpRules(pduSession)
 		ue.DeletePduSession(pduSessionId.Value)
 		log.Info("[GNB][NGAP] Successfully deleted PDU Session ", pduSessionId.Value, " from UE Context")
 	}
@@ -977,7 +987,7 @@ func HandlerPathSwitchRequestAcknowledge(gnb *context.GNBContext, message *ngapT
 		var pduSessions [16]*context.GnbPDUSession
 		pduSessions[0] = pduSession
 
-		msg := context.UEMessage{GNBPduSessions: pduSessions, GnbIp: gnb.GetN3GnbIp()}
+		msg := context.UEMessage{GNBPduSessions: pduSessions, GnbIp: gnb.GetN3GnbIp(), GtpIfName: gnb.GetGtpIfName()}
 
 		sender.SendMessageToUe(ue, msg)
 	}
@@ -1119,9 +1129,13 @@ func HandlerHandoverRequest(amf *context.GNBAmf, gnb *context.GNBContext, messag
 			}
 		}
 
-		_, err = ue.CreatePduSession(pduSessionId, upfIp, sst, sd, 0, 1, 0, 0, binary.BigEndian.Uint32(teidUplink), gnb.GetUeTeid(ue))
+		pduSession, err := ue.CreatePduSession(pduSessionId, upfIp, sst, sd, 0, 1, 0, 0, binary.BigEndian.Uint32(teidUplink), gnb.GetUeTeid(ue))
 		if err != nil {
 			log.Error("[GNB] ", err)
+		}
+		if pduSession != nil && gnb.IsGtpIfReady() {
+			ulPdr, dlPdr, ulFar, dlFar, qerId := gnb.AllocatePdrFarIds(false)
+			pduSession.SetGtpRuleIds(ulPdr, dlPdr, ulFar, dlFar, qerId)
 		}
 	}
 

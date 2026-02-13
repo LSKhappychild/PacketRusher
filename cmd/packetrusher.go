@@ -167,6 +167,33 @@ func main() {
 				},
 			},
 			{
+				Name:    "sequence",
+				Aliases: []string{"seq"},
+				Usage: "\nSequential single-UE procedure test.\n" +
+					"Runs Registration, PDU Session, AN Release, Service Request, Handover, Deregistration in order.\n" +
+					"Example: sequence -n 1 --tunnel --delay 2\n",
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "number-of-ues", Value: 1, Aliases: []string{"n"}, Usage: "Number of UEs to test sequentially."},
+					&cli.BoolFlag{Name: "tunnel", Aliases: []string{"t"}, Usage: "Enable the creation of the GTP-U tunnel interface."},
+					&cli.IntFlag{Name: "delay", Value: 0, Aliases: []string{"d"}, Usage: "Delay in seconds between each procedure step. 0 for no delay."},
+				},
+				Action: func(c *cli.Context) error {
+					cfg := setConfig(*c)
+
+					log.Info("PacketRusher version " + version)
+					log.Info("---------------------------------------")
+					log.Info("[TESTER] Starting test function: Sequential single-UE procedure test")
+					log.Info("[TESTER][GNB] Control interface IP/Port: ", cfg.GNodeB.ControlIF.AddrPort)
+					log.Info("[TESTER][GNB] Data interface IP/Port: ", cfg.GNodeB.DataIF.AddrPort)
+					for _, amf := range cfg.AMFs {
+						log.Info("[TESTER][AMF] AMF IP/Port: ", amf.AddrPort)
+					}
+					log.Info("---------------------------------------")
+
+					return templates.TestSingleUESequence(c.Bool("tunnel"), c.Int("number-of-ues"), c.Int("delay"))
+				},
+			},
+			{
 				Name: "amf-load-loop",
 				Usage: "\nTest AMF responses in interval\n" +
 					"Example for generating 20 requests to AMF per second in interval of 20 seconds: amf-load-loop -n 20 -t 20\n",

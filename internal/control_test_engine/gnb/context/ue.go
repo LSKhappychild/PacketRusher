@@ -54,6 +54,13 @@ type GnbPDUSession struct {
 	qosId        int64
 	fiveQi       int64
 	priArp       int64
+
+	// GTP rule IDs allocated by the gNB for the shared interface
+	ulPdrId uint32
+	dlPdrId uint32
+	ulFarId uint32
+	dlFarId uint32
+	qerId   uint32
 }
 
 type mobility struct {
@@ -292,6 +299,18 @@ func (pduSession *GnbPDUSession) GetFiveQI() int64 {
 
 func (pduSession *GnbPDUSession) GetPriorityARP() int64 {
 	return pduSession.priArp
+}
+
+func (pduSession *GnbPDUSession) SetGtpRuleIds(ulPdr, dlPdr, ulFar, dlFar, qerId uint32) {
+	pduSession.ulPdrId = ulPdr
+	pduSession.dlPdrId = dlPdr
+	pduSession.ulFarId = ulFar
+	pduSession.dlFarId = dlFar
+	pduSession.qerId = qerId
+}
+
+func (pduSession *GnbPDUSession) GetGtpRuleIds() (ulPdr, dlPdr, ulFar, dlFar, qerId uint32) {
+	return pduSession.ulPdrId, pduSession.dlPdrId, pduSession.ulFarId, pduSession.dlFarId, pduSession.qerId
 }
 
 func (pduSession *GnbPDUSession) GetPduType() (valor string) {

@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"my5G-RANTester/config"
 	"my5G-RANTester/internal/control_test_engine/gnb/context"
 	"my5G-RANTester/internal/control_test_engine/ue/scenario"
@@ -85,7 +86,6 @@ type UEPDUSession struct {
 	rule          *netlink.Rule
 	routeTun      *netlink.Route
 	vrf           *netlink.Vrf
-	stopSignal    chan bool
 	Wait          chan bool
 	T3580Retries  int
 
@@ -327,12 +327,45 @@ func (ue *UEContext) DeletePduSession(pduSessionid uint8) error {
 	}
 	pduSession := ue.PduSession[pduSessionid-1]
 	close(pduSession.Wait)
-	stopSignal := pduSession.GetStopSignal()
-	if stopSignal != nil {
-		stopSignal <- true
-	}
+
+	// Clean up per-UE networking resources from the shared interface
+	cleanupPduSessionNetworking(pduSession)
+
 	ue.PduSession[pduSessionid-1] = nil
 	return nil
+}
+
+// cleanupPduSessionNetworking removes per-UE IP address, routing rule, route, and VRF
+// from the shared GTP interface without destroying the interface itself.
+func cleanupPduSessionNetworking(pduSession *UEPDUSession) {
+	ueRoute := pduSession.GetTunRoute()
+	ueRule := pduSession.GetTunRule()
+	ueTun := pduSession.GetTunInterface()
+	ueVrf := pduSession.GetVrfDevice()
+
+	if ueRoute != nil {
+		_ = netlink.RouteDel(ueRoute)
+	}
+
+	if ueRule != nil {
+		_ = netlink.RuleDel(ueRule)
+	}
+
+	// Remove only the UE's IP address from the shared interface
+	if ueTun != nil && pduSession.ueIP != "" {
+		addr := &netlink.Addr{
+			IPNet: &net.IPNet{
+				IP:   net.ParseIP(pduSession.ueIP).To4(),
+				Mask: net.IPv4Mask(255, 255, 255, 255),
+			},
+		}
+		_ = netlink.AddrDel(ueTun, addr)
+	}
+
+	if ueVrf != nil {
+		_ = netlink.LinkSetDown(ueVrf)
+		_ = netlink.LinkDel(ueVrf)
+	}
 }
 
 func (pduSession *UEPDUSession) SetIp(ip [12]uint8) {
@@ -349,14 +382,6 @@ func (pduSession *UEPDUSession) SetGnbIp(ip netip.Addr) {
 
 func (pduSession *UEPDUSession) GetGnbIp() netip.Addr {
 	return pduSession.ueGnbIP
-}
-
-func (pduSession *UEPDUSession) SetStopSignal(stopSignal chan bool) {
-	pduSession.stopSignal = stopSignal
-}
-
-func (pduSession *UEPDUSession) GetStopSignal() chan bool {
-	return pduSession.stopSignal
 }
 
 func (pduSession *UEPDUSession) GetPduSesssionId() uint8 {
@@ -667,31 +692,10 @@ func (ue *UEContext) SetAuthSubscription(k, opc, op, amf, sqn string) {
 func (ue *UEContext) Terminate() {
 	ue.SetStateMM_NULL()
 
-	// clean all context of tun interface
+	// Clean up per-UE networking resources from the shared GTP interface
 	for _, pduSession := range ue.PduSession {
 		if pduSession != nil {
-			ueTun := pduSession.GetTunInterface()
-			ueRule := pduSession.GetTunRule()
-			ueRoute := pduSession.GetTunRoute()
-			ueVrf := pduSession.GetVrfDevice()
-
-			if ueTun != nil {
-				_ = netlink.LinkSetDown(ueTun)
-				_ = netlink.LinkDel(ueTun)
-			}
-
-			if ueRule != nil {
-				_ = netlink.RuleDel(ueRule)
-			}
-
-			if ueRoute != nil {
-				_ = netlink.RouteDel(ueRoute)
-			}
-
-			if ueVrf != nil {
-				_ = netlink.LinkSetDown(ueVrf)
-				_ = netlink.LinkDel(ueVrf)
-			}
+			cleanupPduSessionNetworking(pduSession)
 		}
 	}
 

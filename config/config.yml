@@ -2,25 +2,25 @@
 gnodeb:
   # IP Address on the N2 Interface (e.g. used between the gNodeB and the AMF)
   controlif:
-    ip: "127.0.0.1"
+    ip: "143.248.53.100"
     port: 9487
 
   # IP Address on the N3 Interface (e.g. used between the gNodeB and the UPF)
   dataif:
-    ip: "127.0.0.1"
+    ip: "143.248.53.100"
     port: 2152
 
   # gNodeB's Identity
   plmnlist:
     mcc: "208"
     mnc: "93"
-    tac: "000001"
+    tac: "000007"
     gnbid: "000008"
 
   # gNodeB's Supported Slices
   slicesupportlist:
     sst: "01"
-    sd: "000001" # optional, can be removed if not used
+    sd: "ffffff" # optional, can be removed if not used
 
 # PacketRusher Simulated UE Configuration
 ue:
@@ -31,7 +31,7 @@ ue:
   hplmn:
     mcc: "208"
     mnc: "93"
-  msin: "0000000120"
+  msin: "0000000100"
 
   # In 5G, the UE's identity to the AMF as a SUCI (Subscription Concealed Identifier)
   #
@@ -53,8 +53,8 @@ ue:
   homeNetworkPublicKeyID: 1
   
   # UE's SIM credentials
-  key: "00112233445566778899AABBCCDDEEFF"
-  opc: "00112233445566778899AABBCCDDEEFF"
+  key: "465B5CE8B199B49FAA5F0A2EE238A6BC"
+  opc: "E8ED289DEBA952E4283B54E88E6183CA"
   amf: "8000"
   sqn: "00000000"
 
@@ -63,7 +63,7 @@ ue:
   # in the following slice
   snssai:
     sst: "01"
-    sd: "000001" # optional, can be removed if not used
+    sd: "ffffff" # optional, can be removed if not used
 
   # The UE's security capabilities that will be advertised to the AMF
   integrity:
@@ -81,7 +81,9 @@ ue:
 
 # List of AMF that PacketRusher will try to connect to
 amfif:
-  - ip: "127.0.0.1"
-    port: 38412
+  #- ip: "143.248.53.100"  # Must match the node where amf-reverse-proxy pod is running (goguma1)
+  - ip: "143.248.53.101"  # goguma2 - won't work if proxy pod is on goguma1 due to externalTrafficPolicy: Local
+  #- ip: "10.101.137.130"
+    port: 30053 #30051 for default AMF nodeport, 30053 for reverse-proxy
 logs:
-  level: 4
+  level: 6

@@ -13,6 +13,7 @@ import (
 type UEMessage struct {
 	GNBPduSessions    [16]*GnbPDUSession
 	GnbIp             netip.Addr
+	GtpIfName         string // shared gtp5g interface name
 	GNBRx             chan UEMessage
 	GNBTx             chan UEMessage
 	GNBInboundChannel chan UEMessage

@@ -11,10 +11,14 @@ import (
 	"iter"
 	"net/netip"
 	"slices"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/free5gc/aper"
+	gtpLink "github.com/free5gc/go-gtp5gnl/linkcmd"
+	gtpTunnel "github.com/free5gc/go-gtp5gnl/tuncmd"
 	"github.com/free5gc/nas/nasType"
 	"github.com/free5gc/ngap/ngapConvert"
 	"github.com/free5gc/ngap/ngapType"
@@ -37,6 +41,14 @@ type GNBContext struct {
 	ueIpGenerator  uint8  // ran ue ip.
 	pagedUEs       []PagedUE
 	pagedUELock    sync.Mutex
+
+	// Shared GTP-U interface state
+	gtpIfName      string    // e.g. "gtp-000001"
+	gtpStopSignal  chan bool  // controls CmdAddWithStopCh goroutine
+	gtpIfReady     bool       // true after interface is created
+	pdrIdGenerator uint32     // atomic counter for unique PDR IDs
+	farIdGenerator uint32     // atomic counter for unique FAR IDs
+	qerIdGenerator uint32     // atomic counter for unique QER IDs
 }
 
 type DataInfo struct {
@@ -77,6 +89,9 @@ func (gnb *GNBContext) NewRanGnbContext(gnbId, mcc, mnc, tac, sst, sd string, n2
 	gnb.teidGenerator = 1
 	gnb.ueIpGenerator = 3
 	gnb.dataInfo.gnbIpPort = n3
+	gnb.pdrIdGenerator = 1
+	gnb.farIdGenerator = 1
+	gnb.qerIdGenerator = 1
 }
 
 func (gnb *GNBContext) NewGnBUe(gnbTx chan UEMessage, gnbRx chan UEMessage, prUeId int64, tmsi *nasType.GUTI5G) (*GNBUe, error) {
@@ -130,6 +145,86 @@ func (gnb *GNBContext) GetN3GnbIp() netip.Addr {
 	return gnb.dataInfo.gnbIpPort.Addr()
 }
 
+func (gnb *GNBContext) GetGtpIfName() string {
+	return gnb.gtpIfName
+}
+
+func (gnb *GNBContext) IsGtpIfReady() bool {
+	return gnb.gtpIfReady
+}
+
+// AllocatePdrFarIds atomically allocates 2 PDR IDs, 2 FAR IDs, and optionally 1 QER ID.
+func (gnb *GNBContext) AllocatePdrFarIds(needQer bool) (ulPdr, dlPdr, ulFar, dlFar, qerId uint32) {
+	ulPdr = atomic.AddUint32(&gnb.pdrIdGenerator, 1) - 1
+	dlPdr = atomic.AddUint32(&gnb.pdrIdGenerator, 1) - 1
+	ulFar = atomic.AddUint32(&gnb.farIdGenerator, 1) - 1
+	dlFar = atomic.AddUint32(&gnb.farIdGenerator, 1) - 1
+	if needQer {
+		qerId = atomic.AddUint32(&gnb.qerIdGenerator, 1) - 1
+	}
+	return
+}
+
+// InitSharedGtpInterface creates a single shared gtp5g kernel interface for this gNB.
+func (gnb *GNBContext) InitSharedGtpInterface() {
+	gnb.gtpIfName = fmt.Sprintf("gtp-%s", gnb.controlInfo.gnbId)
+	gnb.gtpStopSignal = make(chan bool)
+
+	// Clean up any stale interface from a previous run
+	_ = gtpLink.CmdDel(gnb.gtpIfName)
+
+	n3Ip := gnb.dataInfo.gnbIpPort.Addr().String()
+	go func() {
+		if err := gtpLink.CmdAddWithStopCh(gnb.gtpIfName, 1, 131072, n3Ip, "", gnb.gtpStopSignal); err != nil {
+			log.Error("[GNB][GTP] Unable to create shared Kernel GTP interface: ", err)
+			return
+		}
+	}()
+
+	time.Sleep(time.Second)
+	gnb.gtpIfReady = true
+	log.Info("[GNB][GTP] Shared GTP interface ", gnb.gtpIfName, " is ready")
+}
+
+// RemoveGtpRules deletes the PDR/FAR/QER rules for a PDU session from the shared GTP interface.
+func (gnb *GNBContext) RemoveGtpRules(pduSession *GnbPDUSession) {
+	if !gnb.gtpIfReady || pduSession == nil {
+		return
+	}
+	ulPdr, dlPdr, ulFar, dlFar, qerId := pduSession.GetGtpRuleIds()
+	if ulPdr == 0 && dlPdr == 0 {
+		return
+	}
+	ifName := gnb.gtpIfName
+
+	if ulPdr != 0 {
+		if err := gtpTunnel.CmdDeletePDR([]string{ifName, strconv.FormatUint(uint64(ulPdr), 10)}); err != nil {
+			log.Warn("[GNB][GTP] Failed to delete UL PDR ", ulPdr, ": ", err)
+		}
+	}
+	if dlPdr != 0 {
+		if err := gtpTunnel.CmdDeletePDR([]string{ifName, strconv.FormatUint(uint64(dlPdr), 10)}); err != nil {
+			log.Warn("[GNB][GTP] Failed to delete DL PDR ", dlPdr, ": ", err)
+		}
+	}
+	if ulFar != 0 {
+		if err := gtpTunnel.CmdDeleteFAR([]string{ifName, strconv.FormatUint(uint64(ulFar), 10)}); err != nil {
+			log.Warn("[GNB][GTP] Failed to delete UL FAR ", ulFar, ": ", err)
+		}
+	}
+	if dlFar != 0 {
+		if err := gtpTunnel.CmdDeleteFAR([]string{ifName, strconv.FormatUint(uint64(dlFar), 10)}); err != nil {
+			log.Warn("[GNB][GTP] Failed to delete DL FAR ", dlFar, ": ", err)
+		}
+	}
+	if qerId != 0 {
+		if err := gtpTunnel.CmdDeleteQER([]string{ifName, strconv.FormatUint(uint64(qerId), 10)}); err != nil {
+			log.Warn("[GNB][GTP] Failed to delete QER ", qerId, ": ", err)
+		}
+	}
+	log.Info("[GNB][GTP] Removed GTP rules for PDU Session ", pduSession.GetPduSessionId())
+}
+
 func (gnb *GNBContext) GetUePool() *sync.Map {
 	return &gnb.uePool
 }
@@ -143,6 +238,7 @@ func (gnb *GNBContext) DeleteGnBUe(ue *GNBUe) {
 	gnb.prUePool.CompareAndDelete(ue.GetPrUeId(), ue)
 	for _, pduSession := range ue.context.pduSession {
 		if pduSession != nil {
+			gnb.RemoveGtpRules(pduSession)
 			gnb.teidPool.Delete(pduSession.GetTeidDownlink())
 		}
 	}
@@ -435,6 +531,13 @@ func (gnb *GNBContext) GetMccAndMncInOctets() []byte {
 }
 
 func (gnb *GNBContext) Terminate() {
+
+	// Destroy the shared GTP interface
+	if gnb.gtpStopSignal != nil {
+		gnb.gtpStopSignal <- true
+		gnb.gtpIfReady = false
+		log.Info("[GNB][GTP] Shared GTP interface ", gnb.gtpIfName, " destroyed")
+	}
 
 	// close all connections
 	close(gnb.GetInboundChannel())

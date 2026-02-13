@@ -115,6 +115,9 @@ func InitGnb(conf config.Config, wg *sync.WaitGroup) *context.GNBContext {
 		}
 	}
 
+	// Create the shared GTP-U interface for this gNB
+	gnb.InitSharedGtpInterface()
+
 	// start communication with UE (server UNIX sockets).
 	serviceNas.InitServer(gnb)
 
